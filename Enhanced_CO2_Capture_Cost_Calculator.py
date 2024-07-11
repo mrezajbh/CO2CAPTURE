@@ -1,38 +1,66 @@
 import matplotlib.pyplot as plt
+import numpy as np
 
 class CO2CaptureCostCalculator:
-    """
-    A class to calculate the cost of CO2 capture and its efficiency.
-    Enhanced with additional validation and more comprehensive calculations.
-    """
-    def __init__(self, cost_of_amines, energy_cost, annual_energy_use, capital_cost, operational_cost,
-                 project_lifetime, co2_capture_efficiency, co2_capture_per_ton_amine):
-        self.validate_inputs(cost_of_amines, energy_cost, annual_energy_use, capital_cost, operational_cost,
-                            project_lifetime, co2_capture_efficiency, co2_capture_per_ton_amine)
-        self.cost_of_amines = cost_of_amines
-        self.energy_cost = energy_cost
-        self.annual_energy_use = annual_energy_use
-        self.capital_cost = capital_cost
-        self.operational_cost = operational_cost
+    def __init__(self, co2_captured_per_year, energy_cost_per_ton_co2, capital_cost_per_ton_co2,
+                 fixed_opex_per_ton_co2, variable_opex_per_ton_co2, project_lifetime,
+                 co2_capture_efficiency, discount_rate=0.05, inflation_rate=0.02,
+                 capture_technology='post_combustion'):
+
+        # --- Thorough Input Validation ---
+        if not (50000 <= co2_captured_per_year <= 5000000):
+            raise ValueError("CO2 captured per year is unrealistic. Should be between 50,000 and 5,000,000 tons.")
+        if not (10 <= energy_cost_per_ton_co2 <= 600):
+            raise ValueError("Energy cost per ton of CO2 is outside the expected range (10-600 USD).")
+        if not (50 <= capital_cost_per_ton_co2 <= 300):
+            raise ValueError("Capital cost per ton of CO2 is outside the expected range (50-300 USD).")
+        if not (5 <= fixed_opex_per_ton_co2 <= 25):
+            raise ValueError("Fixed operating expense (OPEX) per ton of CO2 is outside the expected range (5-25 USD).")
+        if not (1 <= variable_opex_per_ton_co2 <= 10):
+            raise ValueError("Variable operating expense (OPEX) per ton of CO2 is outside the expected range (1-10 USD).")
+        if not (10 <= project_lifetime <= 40):  # Typical lifetime for industrial projects
+            raise ValueError("Project lifetime is unrealistic. Should be between 10 and 40 years.")
+        if not (0.7 <= co2_capture_efficiency <= 0.95):
+            raise ValueError("CO2 capture efficiency is unrealistic. Should be between 0.7 and 0.95.")
+        
+        # --- Store Validated Input Parameters ---
+        self.co2_captured_per_year = co2_captured_per_year
+        self.energy_cost_per_ton_co2 = energy_cost_per_ton_co2
+        self.capital_cost_per_ton_co2 = capital_cost_per_ton_co2
+        self.fixed_opex_per_ton_co2 = fixed_opex_per_ton_co2
+        self.variable_opex_per_ton_co2 = variable_opex_per_ton_co2
         self.project_lifetime = project_lifetime
         self.co2_capture_efficiency = co2_capture_efficiency
-        self.co2_capture_per_ton_amine = co2_capture_per_ton_amine
+        self.discount_rate = discount_rate
+        self.inflation_rate = inflation_rate
+        self.capture_technology = capture_technology
 
-    @staticmethod
-    def validate_inputs(*args):
-        for arg in args:
-            if arg <= 0:
-                raise ValueError("All input values must be greater than 0.")
-            # Additional validations can be added based on domain knowledge.
 
     def calculate_total_cost_and_co2_captured(self):
-        """
-        Calculate the total cost and total CO2 captured over the project's lifetime.
-        """
-        annual_energy_cost = self.energy_cost * self.annual_energy_use
-        total_operational_cost = (self.operational_cost + annual_energy_cost) * self.project_lifetime
-        total_cost = self.capital_cost + total_operational_cost
-        total_co2_captured = self.co2_capture_per_ton_amine * self.project_lifetime * self.co2_capture_efficiency
+        years = np.arange(self.project_lifetime)
+        discount_factors = 1 / (1 + self.discount_rate) ** years
+        inflation_factors = (1 + self.inflation_rate) ** years
+
+        # --- Calculate Costs Per Year (with Degradation & Maintenance) ---
+        annual_energy_cost = (self.co2_captured_per_year * self.energy_cost_per_ton_co2 
+                              * (1 + 0.01 * years))  # 1% annual degradation
+        annual_fixed_opex = (self.fixed_opex_per_ton_co2 * self.co2_captured_per_year 
+                             * (1 + 0.02 * years))  # 2% annual maintenance
+        annual_variable_opex = self.variable_opex_per_ton_co2 * self.co2_captured_per_year
+
+        annual_costs = annual_energy_cost + annual_fixed_opex + annual_variable_opex
+
+        # Apply Discounting and Inflation to Yearly Costs
+        discounted_costs = annual_costs * discount_factors * inflation_factors
+        total_operational_cost = discounted_costs.sum()
+
+        total_capital_cost = self.co2_captured_per_year * self.capital_cost_per_ton_co2
+        total_cost = total_capital_cost + total_operational_cost
+
+        # Total CO2 captured over the project lifetime, considering capture efficiency
+        total_co2_captured = (self.co2_captured_per_year * self.project_lifetime 
+                             * self.co2_capture_efficiency)
+
         return total_cost, total_co2_captured
 
     def calculate_cost_per_ton_co2(self):
@@ -40,93 +68,128 @@ class CO2CaptureCostCalculator:
         Calculate the cost per ton of CO2 captured.
         """
         total_cost, total_co2_captured = self.calculate_total_cost_and_co2_captured()
-        return total_cost / total_co2_captured if total_co2_captured > 0 else float('inf')
+        
+        if total_co2_captured == 0:
+            raise ValueError("Total CO2 captured cannot be zero. Please check your inputs.")
 
-    # Additional functions for more comprehensive calculations can be added here.
+        cost_per_ton_co2 = total_cost / total_co2_captured 
+        return cost_per_ton_co2
 
 class CO2SensitivityAnalysis:
     """
-    A class for conducting sensitivity analysis on the CO2CaptureCostCalculator parameters.
-    Enhanced to handle a broader range of parameters dynamically.
+    A class for conducting sensitivity analysis on CO2 capture project parameters. 
+    This analysis helps understand how changes in key inputs affect the project's 
+    economic viability.
     """
-    def __init__(self, calculator):
+    
+    def __init__(self, calculator, co2_sale_price_per_ton=50, 
+                 co2_sale_percentage=0.8, carbon_tax=100, tax_credit_percentage=0.2, learning_rate=0.10, carbon_tax_threshold=100000):
         self.calculator = calculator
+
+        # --- Store Additional Parameters for Realism ---
+        self.co2_sale_price_per_ton = co2_sale_price_per_ton
+        self.co2_sale_percentage = co2_sale_percentage
+        self.carbon_tax = carbon_tax
+        self.tax_credit_percentage = tax_credit_percentage
+        self.learning_rate = learning_rate
+        self.carbon_tax_threshold = carbon_tax_threshold
 
     def analyze_parameter(self, parameters, range_values):
         """
-        Analyze the impact of changing one or more parameters over specified ranges.
-        Enhanced to handle exceptions more gracefully.
+        Analyzes the impact of changing parameters on the levelized cost of CO2.
         """
-        original_values = {param: getattr(self.calculator, param) for param in parameters}
+
+        original_values = {param: getattr(self, param) if hasattr(self, param) else getattr(self.calculator, param) for param in parameters}
         results = {param: [] for param in parameters}
 
         try:
             for param, values in zip(parameters, range_values):
                 for value in values:
-                    setattr(self.calculator, param, value)
-                    cost_per_ton = self.calculator.calculate_cost_per_ton_co2()
-                    results[param].append(cost_per_ton)
-                setattr(self.calculator, param, original_values[param])
+                    if hasattr(self, param):
+                        setattr(self, param, value)
+                    else:
+                        setattr(self.calculator, param, value)
+                    lco2 = self.calculate_levelized_cost_of_co2()
+                    results[param].append(lco2)
+
+                # Reset the parameter to its original value
+                setattr(self, param, original_values[param]) if hasattr(self, param) else setattr(self.calculator, param, original_values[param]) 
+
         except Exception as e:
             print(f"Error occurred during analysis: {e}")
+
+        # Ensure all parameters are reset to their original values
         finally:
             for param in parameters:
-                setattr(self.calculator, param, original_values[param])
+                setattr(self, param, original_values[param]) if hasattr(self, param) else setattr(self.calculator, param, original_values[param]) 
+            
         return results
 
     @staticmethod
     def plot_results(parameters, range_values, results, title="Sensitivity Analysis"):
         """
-        Plot the results of the sensitivity analysis.
-        Enhanced with better visualization.
+        Creates a plot to visualize the results of the sensitivity analysis.
         """
-        plt.figure(figsize=(10, 6))
-        for param, values in zip(parameters, range_values):
-            plt.plot(values, results[param], label=param)
+        fig, axes = plt.subplots(len(parameters), 1, figsize=(12, 4 * len(parameters)))
 
-        plt.xlabel('Parameter Values')
-        plt.ylabel('Cost per Ton CO2 (USD)')
-        plt.title(title)
-        plt.grid(True)
-        plt.legend()
+        if len(parameters) == 1:
+            axes = [axes]
+
+        for ax, param, values, result in zip(axes, parameters, range_values, results.values()):
+            ax.plot(values, result, marker='o', linestyle='-')
+            ax.set_xlabel(param.replace('_', ' ').capitalize(), fontsize=12)
+            ax.set_ylabel('Cost per Ton CO2 Captured (USD)', fontsize=12)
+            ax.set_title(f"Sensitivity Analysis: {param.replace('_', ' ').capitalize()}", fontsize=14)
+            ax.grid(True, linestyle='--')
+            formatter = plt.FuncFormatter(lambda x, pos: f'${x:.2f}')
+            ax.yaxis.set_major_formatter(formatter)
+
+        plt.tight_layout()
         plt.show()
 
-# Example Usage
-calculator = CO2CaptureCostCalculator(500, 0.1, 100000, 1000000, 50000, 10, 0.9, 1.5)
-total_cost, total_co2_captured = calculator.calculate_total_cost_and_co2_captured()
-cost_per_ton_co2 = calculator.calculate_cost_per_ton_co2()
-print(f"Total cost over 10 years: USD {total_cost:,.2f}")
-print(f"Total CO2 captured over 10 years: {total_co2_captured:.2f} tons")
-print(f"Cost per ton of CO2 captured: USD {cost_per_ton_co2:.2f}")
+    def calculate_levelized_cost_of_co2(self):
+        """
+        Calculates the Levelized Cost of CO2 (LCO2) over the project lifetime, considering:
+        - Potential CO2 sales revenue
+        - Carbon tax or incentives
+        - Tax credits
+        - Learning curve effects on variable costs
+        """
+        years = np.arange(self.calculator.project_lifetime)
+        discount_factors = 1 / (1 + self.calculator.discount_rate) ** years
 
-analysis = CO2SensitivityAnalysis(calculator)
-parameters_to_analyze = ["project_lifetime", "co2_capture_efficiency"]
-ranges = [range(5, 21), [i / 10.0 for i in range(1, 10)]]
-sensitivity_results = analysis.analyze_parameter(parameters_to_analyze, ranges)
+        total_cost, total_co2_captured = self.calculator.calculate_total_cost_and_co2_captured()
+        annual_co2_captured = total_co2_captured / self.calculator.project_lifetime
 
-CO2SensitivityAnalysis.plot_results(parameters_to_analyze, ranges, sensitivity_results)
+        # --- Cost and Revenue Calculations ---
+        annual_costs = total_cost / self.calculator.project_lifetime
+        annual_revenue = annual_co2_captured * self.co2_sale_price_per_ton * self.co2_sale_percentage
+        annual_tax = max(0, annual_co2_captured - self.carbon_tax_threshold) * self.carbon_tax
+        tax_credit = self.calculator.capital_cost_per_ton_co2 * self.calculator.co2_captured_per_year * self.tax_credit_percentage
 
-# based on general industry data
-calculator = CO2CaptureCostCalculator(
-    cost_of_amines=600,  # Example value in USD
-    energy_cost=0.08,  # Example energy cost per kWh
-    annual_energy_use=200000,  # Example annual usage in kWh
-    capital_cost=1500000,  # Example capital cost in USD
-    operational_cost=100000,  # Annual operational cost in USD
-    project_lifetime=25,  # Lifetime of the project in years
-    co2_capture_efficiency=0.85,  # 85% capture efficiency
-    co2_capture_per_ton_amine=2  # Example capture rate per ton of amine
-)
+        # --- Apply Learning Curve ---
+        cumulative_co2_captured = np.cumsum(annual_co2_captured)
+        annual_variable_opex_learning = self.calculator.variable_opex_per_ton_co2 * (cumulative_co2_captured / self.calculator.co2_captured_per_year) ** (-self.learning_rate)
 
-total_cost, total_co2_captured = calculator.calculate_total_cost_and_co2_captured()
-cost_per_ton_co2 = calculator.calculate_cost_per_ton_co2()
-print(f"Total cost over 25 years: USD {total_cost:,.2f}")
-print(f"Total CO2 captured over 25 years: {total_co2_captured:.2f} tons")
-print(f"Cost per ton of CO2 captured: USD {cost_per_ton_co2:.2f}")
+        # --- Discounted Cash Flow Analysis ---
+        net_annual_costs = (annual_costs - annual_revenue + annual_tax - annual_variable_opex_learning)
+        discounted_annual_costs = net_annual_costs * discount_factors
 
-analysis = CO2SensitivityAnalysis(calculator)
-parameters_to_analyze = ["project_lifetime", "co2_capture_efficiency"]
-ranges = [range(10, 31), [i / 10.0 for i in range(5, 10)]]
-sensitivity_results = analysis.analyze_parameter(parameters_to_analyze, ranges)
+        levelized_cost_of_co2 = discounted_annual_costs.sum() / total_co2_captured
 
-CO2SensitivityAnalysis.plot_results(parameters_to_analyze, ranges, sensitivity_results)
+        return levelized_cost_of_co2
+
+# --- Usage Example ---
+calculator = CO2CaptureCostCalculator(co2_captured_per_year=1000000, energy_cost_per_ton_co2=30,
+                                      capital_cost_per_ton_co2=200, fixed_opex_per_ton_co2=15,
+                                      variable_opex_per_ton_co2=5, project_lifetime=30, co2_capture_efficiency=0.9)
+
+sensitivity_analysis = CO2SensitivityAnalysis(calculator)
+
+parameters = ['energy_cost_per_ton_co2', 'capital_cost_per_ton_co2', 'fixed_opex_per_ton_co2', 
+              'variable_opex_per_ton_co2', 'project_lifetime', 'co2_capture_efficiency']
+range_values = [np.linspace(10, 50, 5), np.linspace(100, 300, 5), np.linspace(5, 25, 5), 
+                np.linspace(1, 10, 5), np.linspace(10, 40, 5), np.linspace(0.7, 0.95, 5)]
+
+results = sensitivity_analysis.analyze_parameter(parameters, range_values)
+sensitivity_analysis.plot_results(parameters, range_values, results)
